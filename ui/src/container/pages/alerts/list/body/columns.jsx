@@ -1,10 +1,10 @@
 import Lucide from '@Components/lucide';
+import { useToggleAlertMutation } from '@State/alerts/api';
+import { FCK_TOGGLE_ALERT } from '@State/alerts/fixed-cache-key';
 import {
-  Button, DataTableAction, Tooltip, Truncate,
+  Button, DataTableAction, Switch, Tooltip, Truncate,
 } from '@radicalbit/radicalbit-design-system';
-import {
-  CircleCheck, CircleX, TriangleAlert, Trash,
-} from 'lucide-react';
+import { TriangleAlert, Trash } from 'lucide-react';
 import DeleteAlert from '../delete-alert';
 
 const columns = [
@@ -32,7 +32,7 @@ const columns = [
     key: 'enabled',
     width: '80px',
     align: 'center',
-    render: (enabled) => <Enabled enabled={enabled} />,
+    render: (enabled, record) => <EnabledToggle enabled={enabled} uuid={record.uuid} />,
   },
   {
     title: 'Description',
@@ -119,23 +119,33 @@ function Actions({ uuid, name }) {
   );
 }
 
-function Enabled({ enabled }) {
+function EnabledToggle({ enabled, uuid }) {
+  const [trigger, { isLoading }] = useToggleAlertMutation({ fixedCacheKey: `${FCK_TOGGLE_ALERT}-${uuid}` });
+
+  const handleOnClick = (e) => {
+    e.stopPropagation();
+  };
+
+  const handleOnChange = (checked) => {
+    trigger({ uuid, enabled: checked });
+  };
+
   if (enabled) {
     return (
-      <Tooltip title="Enabled">
-        <span className="is-success">
-          <Lucide icon={CircleCheck} />
-        </span>
-      </Tooltip>
+      <span onClick={handleOnClick} role="presentation">
+        <Tooltip title="Disable alert rule">
+          <Switch aria-label="Disable alert rule" checked loading={isLoading} onChange={handleOnChange} size="small" />
+        </Tooltip>
+      </span>
     );
   }
 
   return (
-    <Tooltip title="Disabled">
-      <span className="opacity-50">
-        <Lucide icon={CircleX} />
-      </span>
-    </Tooltip>
+    <span onClick={handleOnClick} role="presentation">
+      <Tooltip title="Enable alert rule">
+        <Switch aria-label="Enable alert rule" checked={false} loading={isLoading} onChange={handleOnChange} size="small" />
+      </Tooltip>
+    </span>
   );
 }
 

@@ -5,17 +5,18 @@ import {
   AlertChannelEnum, AlertScopeEnum, AlertTimeAggregationEnum,
 } from '@Src/constants';
 import { useCreateAlertMutation } from '@State/alerts/api';
+import { FCK_CREATE_ALERT } from '@State/alerts/fixed-cache-key';
 import { useFormbitContext } from '@radicalbit/formbit';
 
 export default () => {
   const { hideModal } = useModals();
   const { isFormInvalid, submitForm } = useFormbitContext();
 
-  const [trigger, args] = useCreateAlertMutation({ fixedCacheKey: 'create-alert' });
-  const isSubmitDisabled = isFormInvalid();
+  const [trigger, args] = useCreateAlertMutation({ fixedCacheKey: FCK_CREATE_ALERT });
+  const isSubmitDisabled = isFormInvalid() || args.isLoading;
 
-  const handleOnSubmit = () => {
-    if (isSubmitDisabled || args.isLoading) {
+  const handleOnSubmit = ({ enabled }) => {
+    if (isSubmitDisabled) {
       return;
     }
 
@@ -30,7 +31,7 @@ export default () => {
         timeAggregation: AlertTimeAggregationEnum.INSTANT,
         channel: AlertChannelEnum.EMAIL,
         recipients: formData.recipients,
-        enabled: formData.enabled ?? false,
+        enabled,
       };
 
       const { error: createError } = await trigger({
