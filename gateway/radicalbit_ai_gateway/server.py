@@ -263,6 +263,7 @@ alert_rule_service = AlertRuleService(
     project_configs=project_configs,
     project_dao=project_dao,
     key_dao=key_dao,
+    project_budget_limit_dao=project_budget_limit_dao,
 )
 alert_dispatcher = AlertDispatcher(
     alert_rule_dao=alert_rule_dao,

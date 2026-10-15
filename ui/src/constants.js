@@ -106,11 +106,13 @@ const ALERT_SCOPE_LABELS = {
 
 const AlertTimeAggregationEnum = {
   INSTANT: 'instant',
+  LIMIT_WINDOW: 'limit_window',
   WINDOW: 'window',
 };
 
 const ALERT_TIME_AGGREGATION_LABELS = {
   [AlertTimeAggregationEnum.INSTANT]: 'Instant',
+  [AlertTimeAggregationEnum.LIMIT_WINDOW]: 'Limit window',
   [AlertTimeAggregationEnum.WINDOW]: 'Window',
 };
 
@@ -132,6 +134,7 @@ const ALERT_WINDOW_SIZE_LABELS = {
 
 const AlertableEventAggregationEnum = {
   SELECTABLE: 'selectable',
+  LIMIT_WINDOW: 'limit_window',
 };
 
 const AlertChannelEnum = {

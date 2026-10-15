@@ -27,6 +27,8 @@ from radicalbit_ai_gateway.models.event_payload import (
     CacheEventPayload,
     FallbackEventPayload,
     GuardrailEventPayload,
+    LimitEventPayload,
+    LimitScope,
 )
 from radicalbit_ai_gateway.models.event_type import EventType
 
@@ -109,6 +111,42 @@ def fallback_event():
         event_type=EventType.FALLBACK,
         target='gpt-4',
         fallback='gpt-3.5',
+    )
+
+
+RESET = int(datetime(2026, 10, 13, 9, 31, tzinfo=UTC).timestamp())
+
+
+def limit_event(
+    window_id: str | None = 'w1',
+    reset_time: int = RESET,
+    threshold_percentage: int | None = None,
+    event_type: EventType = EventType.RATE_LIMIT,
+    category: str = 'request_rate',
+    consumption: float = 11,
+    maximum: float = 10,
+):
+    if threshold_percentage is not None:
+        event_type = EventType.LIMIT_THRESHOLD
+    return LimitEventPayload(
+        request_uuid=str(uuid.uuid4()),
+        route_name='chat',
+        value=1,
+        api_key_uuid=str(uuid.uuid4()),
+        api_key_name='billing-service',
+        group_uuid=str(uuid.uuid4()),
+        group_name='finance',
+        project_uuid=PROJECT_UUID,
+        project_name='acme',
+        event_type=event_type,
+        limit_scope=LimitScope.ROUTE,
+        category=category,
+        window_seconds=60,
+        maximum=maximum,
+        consumption=consumption,
+        reset_time=reset_time,
+        window_id=window_id,
+        threshold_percentage=threshold_percentage,
     )
 
 
@@ -300,13 +338,136 @@ class DispatchTests:
 
         assert self.email.sent == []
 
-    def test_aggregations_not_built_yet_send_nothing(self):
-        self.rule(time_aggregation='limit_window')
+    # --- limit window ---
 
-        events_processor.emit_event(guardrail_event())
+    def limit_rule(self, event: str = 'rate_limit-exceeded-1m', **columns):
+        return self.rule(event, time_aggregation='limit_window', **columns)
+
+    def test_a_limit_rule_sends_when_the_limit_blocks(self):
+        self.limit_rule()
+
+        events_processor.emit_event(limit_event())
+
+        assert len(self.email.sent) == 1
+
+    def test_a_limit_rule_sends_once_per_window(self):
+        self.limit_rule()
+
+        events_processor.emit_event(limit_event(window_id='w1'))
+        events_processor.emit_event(limit_event(window_id='w1'))
+
+        assert len(self.email.sent) == 1
+
+    def test_a_limit_rule_sends_again_in_the_next_window(self):
+        self.limit_rule()
+
+        events_processor.emit_event(limit_event(window_id='w1'))
+        events_processor.emit_event(limit_event(window_id='w2'))
+
+        assert len(self.email.sent) == 2
+
+    def test_without_a_window_id_the_reset_time_names_the_window(self):
+        self.limit_rule()
+
+        events_processor.emit_event(limit_event(window_id=None))
+        events_processor.emit_event(limit_event(window_id=None))
+        events_processor.emit_event(limit_event(window_id=None, reset_time=RESET + 60))
+
+        assert len(self.email.sent) == 2
+
+    def test_each_limit_rule_has_its_own_window(self):
+        self.limit_rule(name='first')
+        self.limit_rule(name='second')
+
+        events_processor.emit_event(limit_event())
+
+        assert len(self.email.sent) == 2
+
+    def test_a_threshold_rule_sends_on_its_percentage_only(self):
+        self.limit_rule('rate_limit-75pct-1m')
+
+        events_processor.emit_event(limit_event(threshold_percentage=98))
+        assert self.email.sent == []
+
+        events_processor.emit_event(limit_event(threshold_percentage=75))
+        assert len(self.email.sent) == 1
+
+    def test_a_threshold_does_not_trigger_the_exceeded_rule(self):
+        self.limit_rule('rate_limit-exceeded-1m')
+
+        events_processor.emit_event(limit_event(threshold_percentage=75))
 
         assert self.email.sent == []
-        assert self.buffer.records == []
+
+    def test_a_limit_rule_matches_the_category_and_the_window(self):
+        self.limit_rule('rate_limit-exceeded-1h')
+        self.limit_rule('token_input_limit-exceeded-1m')
+
+        events_processor.emit_event(limit_event())
+
+        assert self.email.sent == []
+
+    def test_each_limit_category_is_matched(self):
+        cases = {
+            'token_input_limit': (EventType.TOKEN_INPUT_LIMIT, 'token_input'),
+            'token_output_limit': (EventType.TOKEN_OUTPUT_LIMIT, 'token_output'),
+            'budget_limit': (EventType.BUDGET_LIMIT, 'budget'),
+            'audio_duration_limit': (EventType.AUDIO_DURATION_LIMIT, 'audio_duration'),
+        }
+        for category in cases:
+            self.limit_rule(f'{category}-exceeded-1m', name=category)
+
+        for event_type, scenario in cases.values():
+            events_processor.emit_event(
+                limit_event(event_type=event_type, category=scenario)
+            )
+
+        assert len(self.email.sent) == len(cases)
+
+    def test_a_project_limit_does_not_trigger_a_route_rule(self):
+        self.limit_rule()
+        event = limit_event().model_copy(update={'limit_scope': LimitScope.PROJECT})
+
+        events_processor.emit_event(event)
+
+        assert self.email.sent == []
+
+    def test_a_limit_alert_is_recorded_with_its_window(self):
+        rule = self.limit_rule()
+
+        events_processor.emit_event(limit_event())
+
+        [record] = self.buffer.records
+        assert record['RULE_UUID'] == str(rule.uuid)
+        assert record['EVENT'] == 'rate_limit-exceeded-1m'
+        assert record['AGGREGATION'] == 'limit_window'
+        assert record['COUNT'] == 1
+        assert record['WINDOW_START'] == datetime(2026, 10, 13, 9, 30, tzinfo=UTC)
+        assert record['WINDOW_END'] == datetime(2026, 10, 13, 9, 31, tzinfo=UTC)
+        assert record['STATUS'] == 'sent'
+
+    def test_a_limit_email_shows_consumption_maximum_and_reset_time(self):
+        self.limit_rule()
+
+        events_processor.emit_event(limit_event(consumption=11, maximum=10))
+
+        body = self.email.sent[0]['body']
+        assert 'Consumption' in body
+        assert '>11<' in body
+        assert 'Maximum' in body
+        assert '>10<' in body
+        assert '2026-10-13 09:31:00 UTC' in body
+
+    def test_a_threshold_email_also_shows_the_percentage(self):
+        self.limit_rule('rate_limit-75pct-1m')
+
+        events_processor.emit_event(
+            limit_event(threshold_percentage=75, consumption=7.5)
+        )
+
+        body = self.email.sent[0]['body']
+        assert '>75%<' in body
+        assert '>7.5<' in body
 
     # --- window ---
 
@@ -567,6 +728,19 @@ class TestDispatchOnRedis(DispatchTests, DatabaseIntegration):
         assert len(self.email.sent) == 1
         [record] = self.buffer.records
         assert record['COUNT'] == 3
+
+    def test_two_dispatchers_on_the_same_redis_send_one_limit_alert(self):
+        self.limit_rule()
+        replica = AlertDispatcher(
+            alert_rule_dao=AlertRuleDAO(self.db),
+            email_service=self.email,
+            store=RedisAlertStore(Redis.from_url(self.redis_url), clock=self.clock),
+        )
+
+        self.dispatcher.dispatch(limit_event())
+        replica.dispatch(limit_event())
+
+        assert len(self.email.sent) == 1
 
 
 class TestDispatchInProcess(DispatchTests, DatabaseIntegration):

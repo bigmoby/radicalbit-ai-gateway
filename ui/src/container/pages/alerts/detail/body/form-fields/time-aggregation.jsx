@@ -1,5 +1,9 @@
 import {
-  ALERT_WINDOW_SIZE_LABELS, AlertableEventAggregationEnum, AlertTimeAggregationEnum, AlertWindowSizeEnum,
+  ALERT_TIME_AGGREGATION_LABELS,
+  ALERT_WINDOW_SIZE_LABELS,
+  AlertableEventAggregationEnum,
+  AlertTimeAggregationEnum,
+  AlertWindowSizeEnum,
 } from '@Src/constants';
 import { useGetAlertableEventsQuery } from '@State/alerts/api';
 import { useFormbitContext } from '@radicalbit/formbit';
@@ -42,6 +46,10 @@ function TimeAggregation() {
     }
   };
 
+  if (timeAggregation === AlertTimeAggregationEnum.LIMIT_WINDOW) {
+    return <LimitWindow />;
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <FormField label="Notification frequency">
@@ -81,6 +89,25 @@ function WindowSize() {
         placeholder="Select a duration"
         value={windowSize}
       />
+    </FormField>
+  );
+}
+
+function LimitWindow() {
+  return (
+    <FormField label="Notification frequency">
+      <div className="flex flex-col gap-2">
+        <Radio.Group aria-label="Notification frequency" disabled value={AlertTimeAggregationEnum.LIMIT_WINDOW}>
+          <Radio value={AlertTimeAggregationEnum.LIMIT_WINDOW}>
+            {ALERT_TIME_AGGREGATION_LABELS[AlertTimeAggregationEnum.LIMIT_WINDOW]}
+          </Radio>
+        </Radio.Group>
+
+        <span>
+          Limit and threshold events follow the window of their limit: the alert is sent the first time
+          the event happens in each window, and not again until the limit resets.
+        </span>
+      </div>
     </FormField>
   );
 }

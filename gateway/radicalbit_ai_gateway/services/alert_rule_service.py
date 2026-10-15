@@ -3,8 +3,10 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from radicalbit_ai_gateway.alerting.limit_event_names import parse_limit_event
 from radicalbit_ai_gateway.db.dao.alert_rule_dao import AlertRuleDAO
 from radicalbit_ai_gateway.db.dao.key_dao import KeyDAO
+from radicalbit_ai_gateway.db.dao.project_budget_limit_dao import ProjectBudgetLimitDAO
 from radicalbit_ai_gateway.db.dao.project_dao import ProjectDAO
 from radicalbit_ai_gateway.db.tables.alert_rule_table import AlertRule
 from radicalbit_ai_gateway.models.alert_rule_dto import (
@@ -34,7 +36,6 @@ logger = logging.getLogger(app_config.log_config.logger_name)
 
 # Valid, but not dispatched yet: rules using them are refused until they are.
 _UNSUPPORTED_SCOPES = {AlertRuleScope.PROJECT, AlertRuleScope.CREDENTIAL}
-_UNSUPPORTED_AGGREGATIONS = {AlertRuleTimeAggregation.LIMIT_WINDOW}
 
 # Changing any of these can change which events the rule's target offers.
 _EVENT_IDENTITY_FIELDS = {'scope', 'project', 'route', 'credential_uuid', 'event'}
@@ -81,6 +82,10 @@ def _check_target(fields: Mapping[str, Any]) -> None:
             raise AlertRuleInvalidTargetError(
                 'A credential rule takes no project and no route'
             )
+
+
+def _check_scope_supported(fields: Mapping[str, Any]) -> None:
+    scope = AlertRuleScope(fields['scope'])
     if scope in _UNSUPPORTED_SCOPES:
         raise AlertRuleInvalidTargetError(f'Scope "{scope.value}" is not supported yet')
 
@@ -103,9 +108,14 @@ def _check_aggregation(fields: Mapping[str, Any]) -> None:
         raise AlertRuleUnsupportedTimeAggregationError(
             'Window aggregation applies only to guardrail and fallback events'
         )
-    if aggregation in _UNSUPPORTED_AGGREGATIONS:
+    is_limit_event = parse_limit_event(fields['event']) is not None
+    if is_limit_event and aggregation is not AlertRuleTimeAggregation.LIMIT_WINDOW:
         raise AlertRuleUnsupportedTimeAggregationError(
-            f'Time aggregation "{aggregation.value}" is not supported yet'
+            'Limit and threshold events take only the limit_window aggregation'
+        )
+    if not is_limit_event and aggregation is AlertRuleTimeAggregation.LIMIT_WINDOW:
+        raise AlertRuleUnsupportedTimeAggregationError(
+            'The limit_window aggregation applies only to limit and threshold events'
         )
 
 
@@ -116,12 +126,23 @@ class AlertRuleService:
         project_configs: dict[str, ProjectEntry] | None = None,
         project_dao: ProjectDAO | None = None,
         key_dao: KeyDAO | None = None,
+        project_budget_limit_dao: ProjectBudgetLimitDAO | None = None,
     ):
         self.alert_rule_dao = alert_rule_dao
         self._project_configs = project_configs if project_configs is not None else {}
         self.project_dao = project_dao
         self.key_dao = key_dao
-        self.alertable_events = AlertableEvents(self._project_configs)
+        self.project_budget_limit_dao = project_budget_limit_dao
+        self.alertable_events = AlertableEvents(
+            self._project_configs, project_has_budget=self._project_has_budget
+        )
+
+    def _project_has_budget(self, project_uuid: str) -> bool:
+        if self.project_budget_limit_dao is None:
+            return False
+        return bool(
+            self.project_budget_limit_dao.get_by_project_uuid(UUID(project_uuid))
+        )
 
     def _resolve_project_name(self, project_uuid: str | None) -> str | None:
         if not project_uuid:
@@ -194,8 +215,9 @@ class AlertRuleService:
     def create_rule(self, alert_rule_in: AlertRuleIn) -> AlertRuleOut:
         entity = alert_rule_in.to_alert_rule()
         fields = _rule_fields(entity)
-        _check_aggregation(fields)
         _check_target(fields)
+        _check_aggregation(fields)
+        _check_scope_supported(fields)
         self._check_event(fields)
 
         try:
@@ -220,8 +242,9 @@ class AlertRuleService:
             return self._to_out(existing)
 
         merged = {**_rule_fields(existing), **update_fields}
-        _check_aggregation(merged)
         _check_target(merged)
+        _check_aggregation(merged)
+        _check_scope_supported(merged)
         # A stale rule can still be renamed: the event is checked only when the
         # client changes what it identifies.
         if _EVENT_IDENTITY_FIELDS & update_fields.keys():

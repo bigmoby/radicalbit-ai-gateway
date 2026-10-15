@@ -16,6 +16,11 @@ import logging
 from uuid import UUID
 
 from radicalbit_ai_gateway.alerting.alert_store import AlertStore
+from radicalbit_ai_gateway.alerting.limit_event_names import (
+    CATEGORY_BY_SCENARIO,
+    exceeded_event,
+    threshold_event,
+)
 from radicalbit_ai_gateway.db.dao.alert_rule_dao import AlertRuleDAO
 from radicalbit_ai_gateway.db.tables.alert_rule_table import AlertRule
 from radicalbit_ai_gateway.events.alerts_processor import AlertStatus, emit_alert
@@ -29,6 +34,8 @@ from radicalbit_ai_gateway.models.event_payload import (
     EventPayload,
     FallbackEventPayload,
     GuardrailEventPayload,
+    LimitEventPayload,
+    LimitScope,
 )
 from radicalbit_ai_gateway.services.alert_email_formatter import (
     build_alert_email_body,
@@ -53,6 +60,9 @@ _WINDOW_SECONDS = {
 _WINDOW_GRACE_SECONDS = 60 * 60
 _TIME_FORMAT = '%Y-%m-%d %H:%M:%S UTC'
 
+# How long a limit window's claim outlives the window's reset.
+_LIMIT_WINDOW_MARGIN_SECONDS = 60 * 60
+
 
 @dataclass(frozen=True)
 class AlertEvent:
@@ -69,6 +79,20 @@ def alert_event(event: EventPayload) -> AlertEvent | None:
         return AlertEvent(key=key, scope=AlertRuleScope.ROUTE)
     if isinstance(event, FallbackEventPayload):
         return AlertEvent(key=FALLBACK_EVENT, scope=AlertRuleScope.ROUTE)
+    if isinstance(event, LimitEventPayload):
+        # Rules on project and credential limits are not dispatched yet.
+        if event.limit_scope is not LimitScope.ROUTE:
+            return None
+        category = CATEGORY_BY_SCENARIO.get(event.category)
+        if category is None:
+            return None
+        if event.threshold_percentage is None:
+            key = exceeded_event(category, event.window_seconds)
+        else:
+            key = threshold_event(
+                category, event.threshold_percentage, event.window_seconds
+            )
+        return AlertEvent(key=key, scope=AlertRuleScope.ROUTE)
     return None
 
 
@@ -154,6 +178,21 @@ class _Window:
         )
 
 
+def _format_quantity(value: float) -> str:
+    return str(int(value)) if value == int(value) else f'{value:g}'
+
+
+def _limit_details(event: LimitEventPayload, reset: datetime) -> list[tuple[str, str]]:
+    details = [
+        ('Consumption', _format_quantity(event.consumption)),
+        ('Maximum', _format_quantity(event.maximum)),
+    ]
+    if event.threshold_percentage is not None:
+        details.append(('Threshold', f'{event.threshold_percentage}%'))
+    details.append(('Reset time', reset.strftime(_TIME_FORMAT)))
+    return details
+
+
 class AlertDispatcher:
     """Send the alerts an event triggers, according to each rule's aggregation.
 
@@ -175,6 +214,7 @@ class AlertDispatcher:
             Callable[[AlertRule, AlertEvent, EventPayload], None],
         ] = {
             AlertRuleTimeAggregation.INSTANT: self._send_instant,
+            AlertRuleTimeAggregation.LIMIT_WINDOW: self._send_once_per_limit_window,
             AlertRuleTimeAggregation.WINDOW: self._count_in_window,
         }
 
@@ -258,7 +298,8 @@ class AlertDispatcher:
             time=window.end,
             details=[('Events', str(count)), ('Window', interval)],
             count=count,
-            window=window,
+            window_start=window.start,
+            window_end=window.end,
         )
 
     def _count_in_window(
@@ -292,6 +333,32 @@ class AlertDispatcher:
             details=_instant_details(event),
         )
 
+    def _send_once_per_limit_window(
+        self, rule: AlertRule, matched: AlertEvent, event: EventPayload
+    ) -> None:
+        """Send the first time the rule fires in the limit's current window.
+
+        The window is the limiter's `window_id`, or its reset time when the
+        limiter had no window open. Only the replica that claims it sends.
+        """
+        if not isinstance(event, LimitEventPayload):
+            return
+        window = event.window_id or str(event.reset_time)
+        now = int(self._store.now().timestamp())
+        ttl = max(event.reset_time - now, 0) + _LIMIT_WINDOW_MARGIN_SECONDS
+        if not self._store.claim(f'alert:limit:{rule.uuid}:{window}', ttl):
+            return
+        reset = datetime.fromtimestamp(event.reset_time, tz=UTC)
+        self._send(
+            rule,
+            matched,
+            target=_target(matched.scope, event),
+            time=self._store.now(),
+            details=_limit_details(event, reset),
+            window_start=reset - timedelta(seconds=event.window_seconds),
+            window_end=reset,
+        )
+
     def _send(
         self,
         rule: AlertRule,
@@ -301,7 +368,8 @@ class AlertDispatcher:
         time: datetime,
         details: list[tuple[str, str]],
         count: int = 1,
-        window: _Window | None = None,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
     ) -> None:
         subject = build_alert_email_subject(rule.name, matched.key, target)
         body = build_alert_email_body(
@@ -334,6 +402,6 @@ class AlertDispatcher:
             aggregation=rule.time_aggregation,
             status=AlertStatus.SENT if sent else AlertStatus.FAILED,
             count=count,
-            window_start=window.start if window else None,
-            window_end=window.end if window else None,
+            window_start=window_start,
+            window_end=window_end,
         )
