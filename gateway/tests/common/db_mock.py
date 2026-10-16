@@ -23,11 +23,12 @@ from radicalbit_ai_gateway.models.auth_dto import (
     GroupOut,
     GroupRoutesIn,
     GroupsRouteOut,
+    KeyCreateIn,
     KeyFullOut,
     KeyGroupIn,
-    KeyIn,
     KeyOut,
     KeysUuidIn,
+    KeyUpdateIn,
     RouteGroupsIn,
 )
 from radicalbit_ai_gateway.models.config_slot import Slot
@@ -72,6 +73,7 @@ def get_sample_key(
     hashed_key: str = HASHED_KEY,
     obscured_key: str = OBSCURED_KEY,
     group_uuid: uuid.UUID | None = None,
+    expires_on: datetime.date | None = None,
 ) -> Key:
     now = datetime.datetime.now(tz=UTC)
     return Key(
@@ -84,6 +86,7 @@ def get_sample_key(
         created_at=now,
         updated_at=now,
         group_uuid=group_uuid,
+        expires_on=expires_on,
         # unset .limits on a transient instance can hang (SQLAlchemy lazy-load)
         limits=[],
     )
@@ -109,6 +112,7 @@ def get_sample_key_with_group(
         group_uuid=group_uuid,
         group=get_sample_group(uuid=group_uuid),
         limits=[],
+        expires_on=None,
     )
 
 
@@ -330,8 +334,12 @@ def get_sample_api_key_sec(
     return ApiKeySec(plain_key=plain_key, hashed_key=hashed_key)
 
 
-def get_sample_key_in(name: str = 'user@domain.com') -> KeyIn:
-    return KeyIn(name=name)
+def get_sample_key_update_in(name: str = 'user@domain.com') -> KeyUpdateIn:
+    return KeyUpdateIn(name=name)
+
+
+def get_sample_key_create_in(name: str = 'user@domain.com') -> KeyCreateIn:
+    return KeyCreateIn(name=name)
 
 
 def get_sample_group_in(name: str = 'group') -> GroupIn:

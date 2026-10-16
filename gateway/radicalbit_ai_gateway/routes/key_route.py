@@ -5,9 +5,10 @@ from fastapi import APIRouter, Query
 
 from radicalbit_ai_gateway.models.auth_dto import (
     GroupFullOut,
+    KeyCreateIn,
     KeyFullOut,
     KeyGroupIn,
-    KeyIn,
+    KeyUpdateIn,
 )
 from radicalbit_ai_gateway.models.credential_limiting import (
     CredentialLimitOut,
@@ -30,7 +31,7 @@ class KeyRoute:
         @router.post('/keys', status_code=201, response_model=KeyFullOut)
         @route_meta(entity_type='KEY', response_uuid_field='uuid')
         def create_key(
-            key_in: KeyIn,
+            key_in: KeyCreateIn,
         ):
             key = key_service.create_key(key_in)
             logger.info('Created key %s', key.uuid)
@@ -54,7 +55,7 @@ class KeyRoute:
 
         @router.patch('/keys/{key_uuid}', status_code=200, response_model=KeyFullOut)
         @route_meta(entity_type='KEY', entity_uuid_param='key_uuid')
-        def update_key(key_uuid: UUID, key_in: KeyIn):
+        def update_key(key_uuid: UUID, key_in: KeyUpdateIn):
             return key_service.update_key_name(key_uuid, key_in)
 
         @router.delete('/keys/{key_uuid}', status_code=200, response_model=KeyFullOut)
